@@ -12,11 +12,11 @@
      (do ~@body)))
 
 (defn build-bot
-  [{:keys [name host port server-password]
-    :or {name "ircbotx" port 6667}
+  [{:keys [nick host port server-password]
+    :or {nick "ircbotx" port 6667}
     :as options}]
   (doto (PircBotX.)
-        (.setName name)
+        (.setName nick)
         (.connect host port server-password)))
 
 (defn join-channel
@@ -44,11 +44,23 @@
    (add-handler (fn[m r]
                   (r (str \"You just said\" (:content m)))))
    You can also specify a regexp to filter incomming messages"
-  [handler & {:keys [regexp] :or {regexp #".*"}}]
+  [handler & {:keys [regexp bot] :or {regexp #".*"}}]
   (let [handler-impl (proxy [ListenerAdapter] []
                        (onMessage [event]
                          (let [message (format-message event)]
                            (when (re-matches regexp (:content message))
                              (handler message
                                       (fn [response] (.respond event response)))))))]
-    (.. *bot* getListenerManager (addListener handler-impl))))
+    (.. (or bot *bot*) getListenerManager (addListener handler-impl))))
+
+(defmacro on-message
+  [msg reply-to opts & body]
+  `(apply
+    add-handler
+    (fn [~msg ~reply-to] (do ~@body))
+    (apply concat ~opts)))
+
+(defmacro defbot
+  [nick host opts & body]
+  `(with-bot (build-bot (assoc ~opts :nick ~nick :host ~host))
+     (do ~@body)))
