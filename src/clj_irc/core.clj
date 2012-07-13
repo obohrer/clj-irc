@@ -1,4 +1,6 @@
 (ns clj-irc.core
+  (:require [clj-irc.utils  :as utils]
+            [clojure.string :as string])
   (:import [org.pircbotx PircBotX]
            [org.pircbotx.hooks ListenerAdapter]
            [org.pircbotx.hooks.events MessageEvent]))
@@ -12,20 +14,34 @@
      (do ~@body)))
 
 (defn build-bot
-  [{:keys [nick host port server-password]
-    :or {nick "ircbotx" port 6667}
+  [{:keys [nick name host port server-password messages-delay]
+    :or {nick "ircbotx" name "ircbotx" port 6667 messages-delay 1000}
     :as options}]
   (doto (PircBotX.)
         (.setName nick)
+        (.setLogin name)
+        (.setMessageDelay messages-delay)
         (.connect host port server-password)))
 
 (defn join-channel
-  [channel-name]
-  (.joinChannel *bot* channel-name))
+  [channel]
+  (.joinChannel *bot* channel))
 
 (defn send-message
   [channel message]
   (.sendMessage *bot* channel message))
+
+(defn disconnect
+  []
+  (.disconnect *bot*))
+
+(defn reconnect
+  []
+  (.reconnect *bot*))
+
+(defn shutdown
+  []
+  (.shutdown *bot*))
 
 (defn format-message
   [event]
@@ -36,6 +52,11 @@
      :channel  (.. event getChannel getName)}
    :timestamp  (.getTimestamp event)
    :content  (.getMessage event)})
+
+(defn respond
+  [event message]
+  (doseq [part (string/split message #"\n")]
+    (.respond event part)))
 
 (defn add-handler
   "Add a handler for incomming messages
@@ -50,7 +71,7 @@
                          (let [message (format-message event)]
                            (when (re-matches regexp (:content message))
                              (handler message
-                                      (fn [response] (.respond event response)))))))]
+                                      (fn [response] (respond event response)))))))]
     (.. (or bot *bot*) getListenerManager (addListener handler-impl))))
 
 (defmacro on-message
@@ -60,7 +81,24 @@
     (fn [~msg ~reply-to] (do ~@body))
     (apply concat ~opts)))
 
+(defn add-auto-reconnect
+  [& {:keys [bot channels]}]
+  (let [reconnect-handler (proxy [ListenerAdapter] []
+                            (onDisconnect [event]
+                              (with-bot (.getBot event)
+                                (utils/try-times* reconnect 10)
+                                (doseq [channel channels]
+                                  (join-channel channel)))))]
+  (.. (or bot *bot*) getListenerManager (addListener reconnect-handler))))
+
 (defmacro defbot
-  [nick host opts & body]
-  `(with-bot (build-bot (assoc ~opts :nick ~nick :host ~host))
-     (do ~@body)))
+  "Define an irc bot"
+  [{:keys [nick host channels auto-reconnect] :as opts} & body]
+  `(let [bot# (build-bot ~opts)]
+     (with-bot bot#
+       (doseq [channel# ~channels]
+         (join-channel channel#))
+       (do ~@body)
+       (when ~auto-reconnect
+         (add-auto-reconnect :channels ~channels))
+       bot#)))
