@@ -27,8 +27,14 @@
   [channel]
   (.joinChannel *bot* channel))
 
+(defn channels
+  []
+  (->> *bot* .getChannelsNames (into #{})))
+
 (defn send-message
   [channel message]
+  (when-not (-> (channels) (contains? channel))
+    (join-channel channel))
   (.sendMessage *bot* channel message))
 
 (defn disconnect
