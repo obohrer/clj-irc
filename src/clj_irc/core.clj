@@ -3,9 +3,10 @@
             [clojure.string :as string])
   (:import [org.pircbotx PircBotX]
            [org.pircbotx.hooks ListenerAdapter]
-           [org.pircbotx.hooks.events MessageEvent]))
+           (javax.net.ssl SSLSocketFactory)
+           (org.pircbotx.hooks.events MessageEvent DisconnectEvent)))
 
-(def ^{:dynamic true} *bot*)
+(def ^{:dynamic true} ^PircBotX *bot*)
 
 (defmacro with-bot
   "Run commands in body with specified bot"
@@ -14,14 +15,18 @@
      (do ~@body)))
 
 (defn build-bot
-  [{:keys [nick name host port server-password messages-delay]
-    :or {nick "ircbotx" name "ircbotx" port 6667 messages-delay 1000}
-    :as options}]
-  (doto (PircBotX.)
-        (.setName nick)
-        (.setLogin name)
-        (.setMessageDelay messages-delay)
-        (.connect host port server-password)))
+  [{:keys [nick name ^String host ^Long port ^String server-password messages-delay ssl? verbose?]
+    :or {nick "ircbotx" name "ircbotx" port 6667 messages-delay 1000}}]
+  (let [^PircBotX bot (doto (PircBotX.)
+                        (.setName nick)
+                        (.setLogin name)
+                        (.setMessageDelay messages-delay))]
+    (when verbose?
+      (.setVerbose bot true))
+    (if ssl?
+      (.connect bot host port server-password (SSLSocketFactory/getDefault))
+      (.connect bot host port server-password))
+    bot))
 
 (defn join-channel
   [channel]
@@ -32,7 +37,7 @@
   (->> *bot* .getChannelsNames (into #{})))
 
 (defn send-message
-  [channel message]
+  [^String channel ^String message]
   (when-not (-> (channels) (contains? channel))
     (join-channel channel))
   (.sendMessage *bot* channel message))
@@ -50,7 +55,7 @@
   (.shutdown *bot*))
 
 (defn format-message
-  [event]
+  [^MessageEvent event]
   {:src
     {:user 
       {:nick       (.. event getUser getNick)
@@ -60,7 +65,7 @@
    :content  (.getMessage event)})
 
 (defn respond
-  [event message]
+  [^MessageEvent event message]
   (doseq [part (string/split message #"\n")]
     (.respond event part)))
 
@@ -71,7 +76,7 @@
    (add-handler (fn[m r]
                   (r (str \"You just said\" (:content m)))))
    You can also specify a regexp to filter incomming messages"
-  [handler & {:keys [regexp bot] :or {regexp #".*"}}]
+  [handler & {:keys [regexp ^PircBotX bot] :or {regexp #".*"}}]
   (let [handler-impl (proxy [ListenerAdapter] []
                        (onMessage [event]
                          (let [message (format-message event)]
@@ -88,9 +93,9 @@
     (apply concat ~opts)))
 
 (defn add-auto-reconnect
-  [& {:keys [bot channels]}]
+  [& {:keys [^PircBotX bot channels]}]
   (let [reconnect-handler (proxy [ListenerAdapter] []
-                            (onDisconnect [event]
+                            (onDisconnect [^DisconnectEvent event]
                               (with-bot (.getBot event)
                                 (utils/try-times* reconnect 10)
                                 (doseq [channel channels]
@@ -99,7 +104,7 @@
 
 (defmacro defbot
   "Define an irc bot"
-  [{:keys [nick host channels auto-reconnect] :as opts} & body]
+  [{:keys [nick host port ssl? verbose? channels auto-reconnect] :as opts} & body]
   `(let [bot# (build-bot ~opts)]
      (with-bot bot#
        (doseq [channel# ~channels]
